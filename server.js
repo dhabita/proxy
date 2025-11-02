@@ -32,12 +32,19 @@ app.post('/proxy', async (req, res) => {
     delete forwardHeaders['host'];
     delete forwardHeaders['content-length'];
 
+    // Check if custom path is specified in header
+    const customPath = forwardHeaders['x-target-path'] || '';
+    delete forwardHeaders['x-target-path']; // Remove after reading
+
+    // Build final URL
+    const finalUrl = customPath ? `${TARGET_URL}${customPath}` : TARGET_URL;
+
     // Kirim request ke pihak ketiga (C)
-    console.log(`🔄 Forwarding to: ${TARGET_URL}`);
+    console.log(`🔄 Forwarding to: ${finalUrl}`);
 
     const response = await axios({
       method: 'POST',
-      url: TARGET_URL,
+      url: finalUrl,
       data: req.body,
       headers: forwardHeaders,
       maxRedirects: 5,
