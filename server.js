@@ -18,10 +18,15 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Proxy server is running' });
 });
 
-// Proxy endpoint - meneruskan semua request POST
-app.post('/proxy', async (req, res) => {
+// Main proxy handler function
+async function handleProxyRequest(req, res) {
   try {
-    console.log('📨 Incoming request from backend A');
+    // Get the request path
+    const requestPath = req.path;
+
+    console.log('📨 Incoming request from backend');
+    console.log('Path:', requestPath);
+    console.log('Method:', req.method);
     console.log('Headers:', JSON.stringify(req.headers, null, 2));
     console.log('Body:', JSON.stringify(req.body, null, 2));
 
@@ -32,18 +37,14 @@ app.post('/proxy', async (req, res) => {
     delete forwardHeaders['host'];
     delete forwardHeaders['content-length'];
 
-    // Check if custom path is specified in header
-    const customPath = forwardHeaders['x-target-path'] || '';
-    delete forwardHeaders['x-target-path']; // Remove after reading
-
-    // Build final URL
-    const finalUrl = customPath ? `${TARGET_URL}${customPath}` : TARGET_URL;
+    // Build final URL - append the request path
+    const finalUrl = `${TARGET_URL}${requestPath}`;
 
     // Kirim request ke pihak ketiga (C)
-    console.log(`🔄 Forwarding to: ${finalUrl}`);
+    console.log(`🔄 Forwarding ${req.method} to: ${finalUrl}`);
 
     const response = await axios({
-      method: 'POST',
+      method: req.method,
       url: finalUrl,
       data: req.body,
       headers: forwardHeaders,
@@ -82,6 +83,21 @@ app.post('/proxy', async (req, res) => {
       });
     }
   }
+}
+
+// Proxy endpoint for /proxy path (backward compatibility)
+app.post('/proxy', handleProxyRequest);
+
+// Forward all other POST requests directly (transparent proxy)
+app.post('*', handleProxyRequest);
+
+// Forward all other methods if needed
+app.all('*', async (req, res) => {
+  // For non-POST, handle similarly
+  if (req.path === '/health') {
+    return; // Already handled above
+  }
+  await handleProxyRequest(req, res);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
