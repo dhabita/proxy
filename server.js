@@ -37,6 +37,16 @@ async function handleProxyRequest(req, res) {
     delete forwardHeaders['host'];
     delete forwardHeaders['content-length'];
 
+    // Hapus headers yang membawa informasi IP client asli
+    // Agar request menggunakan IP server proxy sebagai source
+    delete forwardHeaders['x-forwarded-for'];
+    delete forwardHeaders['x-real-ip'];
+    delete forwardHeaders['x-client-ip'];
+    delete forwardHeaders['x-forwarded'];
+    delete forwardHeaders['forwarded-for'];
+    delete forwardHeaders['forwarded'];
+    delete forwardHeaders['via'];
+
     // Build final URL - append the request path
     const finalUrl = `${TARGET_URL}${requestPath}`;
 
