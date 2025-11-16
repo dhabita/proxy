@@ -57,6 +57,14 @@ async function handleProxyRequest(req, res) {
       forwardHeaders['accept'] = 'application/json, text/plain, */*';
     }
 
+    // Add Origin and Referer headers for CloudFront compatibility
+    if (!forwardHeaders['origin']) {
+      forwardHeaders['origin'] = 'https://www.tokocrypto.com';
+    }
+    if (!forwardHeaders['referer']) {
+      forwardHeaders['referer'] = 'https://www.tokocrypto.com/';
+    }
+
     // Build final URL - append the request path
     const finalUrl = `${TARGET_URL}${requestPath}`;
 
