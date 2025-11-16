@@ -47,6 +47,16 @@ async function handleProxyRequest(req, res) {
     delete forwardHeaders['forwarded'];
     delete forwardHeaders['via'];
 
+    // Ensure proper User-Agent for CloudFront compatibility
+    if (!forwardHeaders['user-agent']) {
+      forwardHeaders['user-agent'] = 'Mozilla/5.0 (compatible; ProxyBot/1.0)';
+    }
+
+    // Add Accept header if not present
+    if (!forwardHeaders['accept']) {
+      forwardHeaders['accept'] = 'application/json, text/plain, */*';
+    }
+
     // Build final URL - append the request path
     const finalUrl = `${TARGET_URL}${requestPath}`;
 
