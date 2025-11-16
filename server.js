@@ -18,93 +18,107 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Proxy server is running' });
 });
 
-// Main proxy handler function
+// Main API handler - acts as API server, not proxy forwarder
+// Makes requests as if this server is the client (like wget does)
 async function handleProxyRequest(req, res) {
   try {
-    // Get the request path
+    // Get the request path and query string
     const requestPath = req.path;
+    const queryString = req.url.includes('?') ? req.url.split('?')[1] : '';
 
     console.log('📨 Incoming request from backend');
     console.log('Path:', requestPath);
+    console.log('Query:', queryString);
     console.log('Method:', req.method);
-    console.log('Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('Body:', JSON.stringify(req.body, null, 2));
 
-    // Siapkan headers untuk diteruskan
-    const forwardHeaders = { ...req.headers };
+    // Build final URL - append the request path and query
+    const finalUrl = queryString
+      ? `${TARGET_URL}${requestPath}?${queryString}`
+      : `${TARGET_URL}${requestPath}`;
 
-    // Hapus headers yang tidak perlu diteruskan
-    delete forwardHeaders['host'];
-    delete forwardHeaders['content-length'];
+    // Create NEW headers as if THIS server is making the request
+    // NOT forwarding client headers - this is key to avoid detection
+    const apiHeaders = {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+    };
 
-    // Hapus headers yang membawa informasi IP client asli
-    // Agar request menggunakan IP server proxy sebagai source
-    delete forwardHeaders['x-forwarded-for'];
-    delete forwardHeaders['x-real-ip'];
-    delete forwardHeaders['x-client-ip'];
-    delete forwardHeaders['x-forwarded'];
-    delete forwardHeaders['forwarded-for'];
-    delete forwardHeaders['forwarded'];
-    delete forwardHeaders['via'];
-
-    // Ensure proper User-Agent for CloudFront compatibility
-    if (!forwardHeaders['user-agent']) {
-      forwardHeaders['user-agent'] = 'Mozilla/5.0 (compatible; ProxyBot/1.0)';
+    // Only forward essential API authentication headers if present
+    // These are needed for TokoCrypto API authentication
+    if (req.headers['x-mbx-apikey']) {
+      apiHeaders['X-MBX-APIKEY'] = req.headers['x-mbx-apikey'];
     }
 
-    // Add Accept header if not present
-    if (!forwardHeaders['accept']) {
-      forwardHeaders['accept'] = 'application/json, text/plain, */*';
+    // Keep Content-Type if present (for POST/PUT requests)
+    if (req.headers['content-type']) {
+      apiHeaders['Content-Type'] = req.headers['content-type'];
     }
 
-    // Add Origin and Referer headers for CloudFront compatibility
-    if (!forwardHeaders['origin']) {
-      forwardHeaders['origin'] = 'https://www.tokocrypto.com';
-    }
-    if (!forwardHeaders['referer']) {
-      forwardHeaders['referer'] = 'https://www.tokocrypto.com/';
+    // Prepare request body if present
+    let requestData = null;
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      if (req.body && Object.keys(req.body).length > 0) {
+        // For form data
+        if (apiHeaders['Content-Type'] === 'application/x-www-form-urlencoded') {
+          requestData = new URLSearchParams(req.body).toString();
+        } else {
+          requestData = req.body;
+        }
+      }
     }
 
-    // Build final URL - append the request path
-    const finalUrl = `${TARGET_URL}${requestPath}`;
-
-    // Kirim request ke pihak ketiga (C)
-    console.log(`🔄 Forwarding ${req.method} to: ${finalUrl}`);
+    // Make request as if THIS server is the client (like wget)
+    console.log(`🌐 Making ${req.method} request to: ${finalUrl}`);
+    console.log('🔑 Auth headers:', req.headers['x-mbx-apikey'] ? 'Present' : 'Not present');
 
     const response = await axios({
       method: req.method,
       url: finalUrl,
-      data: req.body,
-      headers: forwardHeaders,
+      data: requestData,
+      headers: apiHeaders,
       maxRedirects: 5,
-      validateStatus: () => true, // Terima semua status code
+      validateStatus: () => true, // Accept all status codes
+      timeout: 30000, // 30 second timeout
     });
 
-    console.log('✅ Response from C:', response.status);
-    console.log('Response data:', JSON.stringify(response.data, null, 2));
+    console.log('✅ Response status:', response.status);
+    if (response.status === 200) {
+      console.log('📦 Response data preview:', JSON.stringify(response.data).substring(0, 200));
+    } else {
+      console.log('⚠️  Response data:', JSON.stringify(response.data));
+    }
 
-    // Kirim response dari C kembali ke A dengan status code yang sama
+    // Send response back to client
     res.status(response.status)
-       .set(response.headers)
+       .set({
+         'Content-Type': response.headers['content-type'] || 'application/json',
+         'Access-Control-Allow-Origin': '*',
+       })
        .send(response.data);
 
   } catch (error) {
     console.error('❌ Error:', error.message);
 
     if (error.response) {
-      // Server C merespons dengan error
+      // TokoCrypto responded with error
+      console.error('📛 Error response:', error.response.status, JSON.stringify(error.response.data));
       res.status(error.response.status)
-         .set(error.response.headers)
+         .set({ 'Content-Type': 'application/json' })
          .send(error.response.data);
     } else if (error.request) {
-      // Request dibuat tapi tidak ada response
+      // Request made but no response
+      console.error('📛 No response from TokoCrypto');
       res.status(503).json({
         error: 'Service Unavailable',
-        message: 'Tidak bisa terhubung ke target server',
+        message: 'Cannot connect to TokoCrypto API',
         details: error.message
       });
     } else {
-      // Error lainnya
+      // Other errors
+      console.error('📛 Internal error:', error.message);
       res.status(500).json({
         error: 'Internal Server Error',
         message: error.message

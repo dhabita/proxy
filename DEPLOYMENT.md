@@ -3,6 +3,8 @@
 ## Current Deployment
 
 **URL:** https://proxy.dexratoken.com
+**Server IP:** 96.30.196.143
+**Cloudflare IP:** 157.20.219.186
 **Port:** 80
 **Target:** https://www.tokocrypto.com
 
