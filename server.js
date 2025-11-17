@@ -7,6 +7,92 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const TARGET_URL = process.env.TARGET_URL; // URL pihak ketiga (C)
 
+// ==================== ERROR MAPPING ====================
+// Map TokoCrypto error codes to human-readable messages
+const ERROR_MAP = {
+  '-1': {
+    type: 'AUTHENTICATION',
+    category: 'AUTH_ERROR',
+    message: 'Invalid API key or signature',
+    suggestion: 'Check API credentials in TokoCrypto settings'
+  },
+  '-2': {
+    type: 'INSUFFICIENT_BALANCE',
+    category: 'BALANCE_ERROR',
+    message: 'Insufficient funds',
+    suggestion: 'Deposit more funds to your account'
+  },
+  '3203': {
+    type: 'INVALID_PARAMETER',
+    category: 'PARAM_ERROR',
+    message: 'Incorrect order quantity',
+    suggestion: 'Quantity must match stepSize precision'
+  },
+  '3204': {
+    type: 'INVALID_PARAMETER',
+    category: 'PARAM_ERROR',
+    message: 'Minimum notional not met',
+    suggestion: 'Increase order size to meet 20,000 IDR minimum'
+  },
+  '027037': {
+    type: 'TOKOCRYPTO_ERROR',
+    category: 'TOKOCRYPTO_ERROR',
+    message: 'TokoCrypto internal error',
+    suggestion: 'Check: API key active, account verified, IP whitelisted, sufficient balance'
+  },
+  '-1003': {
+    type: 'RATE_LIMIT_EXCEEDED',
+    category: 'RATE_LIMIT',
+    message: 'Too many requests',
+    suggestion: 'Wait 60 seconds before retrying'
+  },
+  '4001': {
+    type: 'MARKET_CLOSED',
+    category: 'MARKET_ERROR',
+    message: 'Trading suspended',
+    suggestion: 'Market maintenance in progress, try again later'
+  },
+  '4002': {
+    type: 'INVALID_SYMBOL',
+    category: 'MARKET_ERROR',
+    message: 'Symbol not found',
+    suggestion: 'Check available trading pairs at /open/v1/common/symbols'
+  }
+};
+
+/**
+ * Transform TokoCrypto error response to readable format
+ */
+function transformErrorResponse(tokoResponse) {
+  const errorCode = tokoResponse.code?.toString() || tokoResponse.data?.code?.toString() || 'UNKNOWN';
+  const errorMsg = tokoResponse.msg || tokoResponse.data?.errorData || '';
+
+  // Get mapped error info
+  const mapped = ERROR_MAP[errorCode] || {
+    type: 'UNKNOWN',
+    category: 'UNKNOWN_ERROR',
+    message: `Unmapped error code: ${errorCode}`,
+    suggestion: 'Contact support with this error code'
+  };
+
+  return {
+    code: parseInt(errorCode) || -1,
+    msg: `${mapped.category}: ${mapped.message}`,
+    data: {
+      status: "ERROR",
+      type: mapped.type,
+      code: errorCode,
+      errorData: `${mapped.message}${errorMsg ? ' - ' + errorMsg : ''}`,
+      details: {
+        reason: errorMsg || `TokoCrypto error code ${errorCode}`,
+        suggestion: mapped.suggestion,
+        originalResponse: tokoResponse
+      }
+    },
+    timestamp: Date.now()
+  };
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -85,43 +171,89 @@ async function handleProxyRequest(req, res) {
     });
 
     console.log('✅ Response status:', response.status);
-    if (response.status === 200) {
-      console.log('📦 Response data preview:', JSON.stringify(response.data).substring(0, 200));
-    } else {
-      console.log('⚠️  Response data:', JSON.stringify(response.data));
-    }
 
-    // Send response back to client
-    res.status(response.status)
-       .set({
-         'Content-Type': response.headers['content-type'] || 'application/json',
-         'Access-Control-Allow-Origin': '*',
-       })
-       .send(response.data);
+    // Check if TokoCrypto returned an error (even with 200 status)
+    const isError = response.data &&
+                    (response.data.code !== 0 && response.data.code !== undefined) ||
+                    response.data.status === 'ERROR' ||
+                    response.status !== 200;
+
+    if (isError) {
+      console.log('⚠️  Error response from TokoCrypto:', JSON.stringify(response.data));
+
+      // Transform error to readable format
+      const transformedError = transformErrorResponse(response.data);
+
+      console.log('📤 Sending transformed error:', JSON.stringify(transformedError));
+
+      // Send transformed error with original HTTP status
+      res.status(response.status)
+         .set({
+           'Content-Type': 'application/json',
+           'Access-Control-Allow-Origin': '*',
+         })
+         .json(transformedError);
+    } else {
+      // SUCCESS case - forward as-is
+      console.log('📦 Success response preview:', JSON.stringify(response.data).substring(0, 200));
+
+      res.status(response.status)
+         .set({
+           'Content-Type': response.headers['content-type'] || 'application/json',
+           'Access-Control-Allow-Origin': '*',
+         })
+         .send(response.data);
+    }
 
   } catch (error) {
     console.error('❌ Error:', error.message);
 
     if (error.response) {
-      // TokoCrypto responded with error
+      // TokoCrypto responded with error - transform it
       console.error('📛 Error response:', error.response.status, JSON.stringify(error.response.data));
+
+      const transformedError = transformErrorResponse(error.response.data);
+
       res.status(error.response.status)
          .set({ 'Content-Type': 'application/json' })
-         .send(error.response.data);
+         .json(transformedError);
     } else if (error.request) {
-      // Request made but no response
+      // Request made but no response - network error
       console.error('📛 No response from TokoCrypto');
+
       res.status(503).json({
-        error: 'Service Unavailable',
-        message: 'Cannot connect to TokoCrypto API',
-        details: error.message
+        code: -9999,
+        msg: 'PROXY_ERROR: Connection timeout',
+        data: {
+          status: 'ERROR',
+          type: 'UPSTREAM_ERROR',
+          code: 'PROXY_001',
+          errorData: 'Could not reach TokoCrypto API servers',
+          details: {
+            reason: error.code === 'ETIMEDOUT' ? 'Connection timeout after 30 seconds' : 'Network error',
+            suggestion: 'TokoCrypto may be experiencing issues. Try again later.'
+          }
+        },
+        timestamp: Date.now()
       });
     } else {
-      // Other errors
+      // Other errors - proxy internal error
       console.error('📛 Internal error:', error.message);
+
       res.status(500).json({
-        error: 'Internal Server Error',
-        message: error.message
+        code: -9999,
+        msg: 'PROXY_ERROR: Internal server error',
+        data: {
+          status: 'ERROR',
+          type: 'INTERNAL_ERROR',
+          code: 'PROXY_002',
+          errorData: `Proxy server error: ${error.message}`,
+          details: {
+            reason: error.message,
+            suggestion: 'Contact system administrator'
+          }
+        },
+        timestamp: Date.now()
       });
     }
   }
